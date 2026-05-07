@@ -2,13 +2,19 @@ package draft
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"tmcmt/internal/tmux"
 )
+
+const archiveRetentionLimit = 1000
 
 func dir() (string, error) {
 	home, err := os.UserHomeDir()
@@ -16,6 +22,18 @@ func dir() (string, error) {
 		return "", err
 	}
 	d := filepath.Join(home, ".local", "state", "tmcmt", "drafts")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		return "", err
+	}
+	return d, nil
+}
+
+func doneDir() (string, error) {
+	draftsDir, err := dir()
+	if err != nil {
+		return "", err
+	}
+	d := filepath.Join(draftsDir, "done")
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}
@@ -76,6 +94,102 @@ func Append(paneID, comment, selection string) error {
 	return err
 }
 
+// Archive moves the active pane draft into done/ and returns its new path.
+func Archive(paneID string) (string, error) {
+	src, err := pathFor(paneID)
+	if err != nil {
+		return "", err
+	}
+	dst, err := nextArchivePath(paneID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	if err := os.Chtimes(dst, now, now); err != nil {
+		return "", err
+	}
+	if err := pruneArchives(); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func nextArchivePath(paneID string) (string, error) {
+	d, err := doneDir()
+	if err != nil {
+		return "", err
+	}
+	prefix := sanitizePaneID(paneID) + "-"
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		return "", err
+	}
+
+	maxSeq := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		seq, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(e.Name(), prefix), ".md"))
+		if err == nil && seq > maxSeq {
+			maxSeq = seq
+		}
+	}
+	return filepath.Join(d, fmt.Sprintf("%s%06d.md", prefix, maxSeq+1)), nil
+}
+
+func pruneArchives() error {
+	d, err := doneDir()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		return err
+	}
+
+	type archiveFile struct {
+		name    string
+		path    string
+		modTime int64
+	}
+	var files []archiveFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, archiveFile{
+			name:    e.Name(),
+			path:    filepath.Join(d, e.Name()),
+			modTime: info.ModTime().UnixNano(),
+		})
+	}
+	if len(files) <= archiveRetentionLimit {
+		return nil
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].modTime == files[j].modTime {
+			return files[i].name < files[j].name
+		}
+		return files[i].modTime < files[j].modTime
+	})
+
+	for _, f := range files[:len(files)-archiveRetentionLimit] {
+		if err := os.Remove(f.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ChunkCount approximates the number of chunks in a draft by counting code
 // fence pairs. Good enough for a status message; not authoritative.
 func ChunkCount(paneID string) (int, error) {
@@ -101,6 +215,77 @@ type Info struct {
 	Path       string
 	Size       int64
 	ChunkCount int
+}
+
+// ArchiveInfo describes a flushed draft stored under drafts/done/.
+type ArchiveInfo struct {
+	Path    string
+	Size    int64
+	ModTime time.Time
+}
+
+// ListArchives returns the newest archived drafts from drafts/done/.
+// Archives are ordered by mtime, with filename as a deterministic tie-breaker.
+func ListArchives(limit int) ([]ArchiveInfo, error) {
+	if limit <= 0 {
+		return nil, errors.New("archive limit must be positive")
+	}
+
+	d, err := doneDir()
+	if err != nil {
+		return nil, err
+	}
+	d, err = filepath.Abs(d)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	type archiveFile struct {
+		name string
+		info ArchiveInfo
+	}
+	var files []archiveFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		stat, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, archiveFile{
+			name: e.Name(),
+			info: ArchiveInfo{
+				Path:    filepath.Join(d, e.Name()),
+				Size:    stat.Size(),
+				ModTime: stat.ModTime(),
+			},
+		})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].info.ModTime.Equal(files[j].info.ModTime) {
+			return files[i].name > files[j].name
+		}
+		return files[i].info.ModTime.After(files[j].info.ModTime)
+	})
+
+	if len(files) > limit {
+		files = files[:limit]
+	}
+
+	out := make([]ArchiveInfo, 0, len(files))
+	for _, file := range files {
+		out = append(out, file.info)
+	}
+	return out, nil
 }
 
 func List() ([]Info, error) {

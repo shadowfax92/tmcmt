@@ -26,7 +26,7 @@ Typical flow inside an agent pane:
   1. M-w enter copy mode, scroll up
   2. v select a passage, c append a commented chunk (nvim popup)
   3. repeat 2 as many times as you like — scroll position is preserved
-  4. C flush the draft: review in nvim popup, :wq, paste into pane
+  4. C flush the draft: review in nvim popup, :wq, paste into pane, archive
   5. hit Enter yourself when the prompt looks right`,
 	Version:       Version,
 	SilenceUsage:  true,

@@ -15,8 +15,8 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
 - ✍️ **nvim popup for every edit** — your keybindings, your config, your muscle memory. No custom TUI to learn.
 - 🔁 **Review pass before flush** — open the whole accumulated draft in nvim, reorder, polish, or delete chunks before sending.
 - 📬 **Bracketed-paste injection** — the whole draft arrives as one coherent message, not N fragments to stitch together.
-- 💾 **Recoverable drafts** — survive accidental popup closes, tmux kills, restarts. Just hit `C` again.
-- 🧹 **Stale-draft GC** — drafts for dead panes are cleaned up automatically on every add/flush.
+- 💾 **Recoverable drafts** — active drafts survive restarts, and flushed drafts are archived as incremental `.md` files.
+- 🧹 **Stale-draft GC** — active drafts for dead panes are cleaned up automatically on every add/flush.
 - 🔧 **Scriptable primitive** — `tmcmt send` pipes stdin straight into any pane, for automation and future multicast.
 
 ---
@@ -51,6 +51,9 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
                          │
                          ▼
           paste whole draft into pane (bracketed paste, no Enter)
+                         │
+                         ▼
+          archive draft in ~/.local/state/tmcmt/drafts/done/
 ```
 
 - **`c`** in copy mode → nvim popup, type comment, `:wq`. Chunk appended to draft. **Pane untouched.**
@@ -79,7 +82,7 @@ Add to `~/.tmux.conf` and reload (`tmux source-file ~/.tmux.conf`):
 bind-key -T copy-mode-vi c send-keys -X copy-pipe-no-clear \
   "tmcmt draft add --pane '#{pane_id}'"
 
-# C = flush the draft: review in nvim popup, paste into pane, clear
+# C = flush the draft: review in nvim popup, paste into pane, archive
 bind-key -T copy-mode-vi C send-keys -X copy-pipe-no-clear \
   "tmcmt draft flush --pane '#{pane_id}'"
 ```
@@ -96,7 +99,7 @@ Inside a tmux pane running `claude` or `codex`:
 4. Type your comment, **`:wq`**. Status bar flashes `tmcmt: 1 chunk in draft — C to flush`.
 5. Scroll somewhere else, select, **`c`** again. Counter ticks up.
 6. When the whole reply is assembled, **`C`**. nvim popup opens on the full draft. Reorder, edit, or delete chunks freely.
-7. **`:wq`** — draft pastes into the agent's prompt via bracketed paste. No auto-Enter.
+7. **`:wq`** — draft pastes into the agent's prompt via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
 8. Review in the live prompt and hit **Enter** yourself when it looks right.
 
 If you exit nvim without changes (`:q!` or `:wq` on an unmodified file), the chunk is treated as cancelled — nothing is appended.
@@ -105,10 +108,12 @@ If you exit nvim without changes (`:q!` or `:wq` on an unmodified file), the chu
 
 ```sh
 tmcmt draft add   --pane <id>    # append a commented chunk (bound to `c`)
-tmcmt draft flush --pane <id>    # review + paste draft (bound to `C`)
+tmcmt draft flush --pane <id>    # review + paste + archive draft (bound to `C`)
 tmcmt draft show  --pane <id>    # print current draft to stdout
 tmcmt draft clear --pane <id>    # discard current draft
 tmcmt draft list                 # list all drafts with pane status
+tmcmt cat        [-n N]           # print recent flushed sessions
+tmcmt ls         [-n N]           # alias for cat
 tmcmt send        --pane <id>    # paste stdin → pane (scriptable)
 tmcmt --version
 ```
@@ -130,6 +135,19 @@ tmcmt --version
 | `--pane <id>` | Target pane id (default: current pane) |
 | `--enter` | Press Enter after pasting |
 
+### Done sessions
+
+Successful flushes are archived under `~/.local/state/tmcmt/drafts/done/`.
+Use `tmcmt cat` to print the latest archived session, or `tmcmt cat -n 5`
+to print the five most recent sessions. Each printed session starts with the
+full archive path:
+
+```text
+==> /Users/you/.local/state/tmcmt/drafts/done/42-000003.md <==
+```
+
+`tmcmt ls` is an alias for the same output.
+
 ## Draft format
 
 Draft files live at `~/.local/state/tmcmt/drafts/<pane-id>.md` (pane id with the `%` stripped — e.g. `%42` → `42.md`). Each chunk is appended as:
@@ -142,7 +160,7 @@ Draft files live at `~/.local/state/tmcmt/drafts/<pane-id>.md` (pane id with the
 
     (blank line)
 
-Chunks just accumulate — no separators, no metadata. When flushed, the raw file content is the payload.
+Chunks just accumulate — no separators, no metadata. When flushed, the raw file content is the payload and then moves to `~/.local/state/tmcmt/drafts/done/<pane-id>-000001.md`, incrementing per pane.
 
 ## Why draft-first?
 
@@ -158,7 +176,8 @@ Draft accumulation fixes this structurally:
 
 - **Cancellation** — `:q!` or `:wq` without edits → chunk cancelled, nothing appended.
 - **Empty comment** — allowed. You get a selection-only chunk.
-- **Stale drafts** — every `add`/`flush` walks the drafts dir and deletes files whose pane id no longer exists in `tmux list-panes -a`.
+- **Flushed drafts** — successful flushes are kept under `drafts/done/` as incremental `.md` files, capped at the newest 1000 archive files.
+- **Stale drafts** — every `add`/`flush` walks the active drafts dir and deletes files whose pane id no longer exists in `tmux list-panes -a`.
 - **ANSI in selections** — CSI (color) and OSC (hyperlinks, titles) sequences are stripped before the selection hits your draft.
 - **Multi-line content** — pasted with bracketed paste (`-p`), so claude-code treats it as one message instead of submitting each line.
 

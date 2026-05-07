@@ -21,10 +21,10 @@ var (
 
 var flushCmd = &cobra.Command{
 	Use:   "flush",
-	Short: "Paste the accumulated draft into --pane and clear it",
+	Short: "Paste the accumulated draft into --pane and archive it",
 	Long: `Opens the draft in an nvim popup for a final review/edit pass,
 then pastes the whole draft into the target pane via bracketed paste
-and deletes the draft file.
+and moves the draft file into drafts/done/.
 
 Does not press Enter unless --send. The pasted content sits in the
 agent's prompt for you to review and submit manually.`,
@@ -86,10 +86,10 @@ func runDraftFlush(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("remove draft: %w", err)
+	if _, err := draft.Archive(paneID); err != nil {
+		return fmt.Errorf("archive draft: %w", err)
 	}
 
-	_ = tmux.DisplayMessage("tmcmt: draft flushed")
+	_ = tmux.DisplayMessage("tmcmt: draft flushed and archived")
 	return nil
 }
