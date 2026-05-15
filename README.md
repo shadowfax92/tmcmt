@@ -18,6 +18,7 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
 - 💾 **Recoverable drafts** — active drafts survive restarts, and flushed drafts are archived as incremental `.md` files.
 - 🧹 **Stale-draft GC** — active drafts for dead panes are cleaned up automatically on every add/flush.
 - 📡 **Multicast review** — `S` lets you pick several coding panes, remembers them, and sends one reviewed draft to all of them.
+- ⚡ **Direct selection send** — `s` sends the selected text raw to your remembered coding panes, with no draft or editor.
 - 🔧 **Scriptable primitive** — `tmcmt send` pipes stdin straight into one or more panes for automation.
 
 ---
@@ -58,14 +59,16 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
 ```
 
 - **`c`** in copy mode → nvim popup, type comment, `:wq`. Chunk appended to draft. **Pane untouched.**
+- **`s`** in copy mode → sends the selected text raw to remembered coding panes. If none are remembered/live, opens the target selector first.
 - **`C`** in copy mode → nvim popup opens on the accumulated draft for a final review. `:wq` pastes into the current pane.
 - **`S`** in copy mode → tmux popup opens a multi-select list of detected coding panes, then nvim opens the same draft for review. `:wq` pastes into every selected pane and remembers those targets for next time.
+- **`I`** in copy mode → opens the target selector and updates the remembered coding panes without sending anything.
 
 You hit Enter yourself when the prompt looks right.
 
 ## Install
 
-Requires Go 1.24+, tmux 3.2+, and `nvim` (or any `$EDITOR`, but `nvim`/`vim` get insert-mode-on-open). The interactive `S` selector also requires `fzf`; non-interactive multicast works with `--targets` or `--reuse`.
+Requires Go 1.24+, tmux 3.2+, and `nvim` (or any `$EDITOR`, but `nvim`/`vim` get insert-mode-on-open). Interactive target selection for `s`, `S`, and `I` requires `fzf`; non-interactive multicast works with `--targets` or `--reuse`.
 
 ```sh
 git clone <repo-url> tmcmt
@@ -84,6 +87,10 @@ Add to `~/.tmux.conf` and reload (`tmux source-file ~/.tmux.conf`):
 bind-key -T copy-mode-vi c send-keys -X copy-pipe-no-clear \
   "tmcmt draft add --pane '#{pane_id}'"
 
+# s = send selected text raw to remembered/new coding panes
+bind-key -T copy-mode-vi s send-keys -X copy-pipe-no-clear \
+  "tmcmt selection send --pane '#{pane_id}'"
+
 # C = flush the draft: review in nvim popup, paste into pane, archive
 bind-key -T copy-mode-vi C send-keys -X copy-pipe-no-clear \
   "tmcmt draft flush --pane '#{pane_id}'"
@@ -91,9 +98,13 @@ bind-key -T copy-mode-vi C send-keys -X copy-pipe-no-clear \
 # S = multicast the draft: select remembered/new coding panes, review, paste, archive
 bind-key -T copy-mode-vi S send-keys -X copy-pipe-no-clear \
   "tmcmt draft multicast --pane '#{pane_id}'"
+
+# I = update remembered coding panes without sending
+bind-key -T copy-mode-vi I run-shell \
+  "tmcmt selection targets --pane '#{pane_id}'"
 ```
 
-Both bindings use `copy-pipe-no-clear` so copy mode stays active and scroll position is preserved.
+The selection-consuming bindings use `copy-pipe-no-clear` so copy mode stays active and scroll position is preserved.
 
 ## Quick Start
 
@@ -104,11 +115,13 @@ Inside a tmux pane running `claude` or `codex`:
 3. **`c`** — nvim popup opens with an empty comment area on top and your selection rendered as a commented-out preview below a `TMCMT-SELECTION-BELOW` separator.
 4. Type your comment, **`:wq`**. Status bar flashes `tmcmt: 1 chunk in draft — C to flush`.
 5. Scroll somewhere else, select, **`c`** again. Counter ticks up.
-6. When the whole reply is assembled, press **`C`** for the current pane or **`S`** to multicast.
-7. With **`S`**, pick one or more detected coding panes in the `fzf` popup. Previously selected targets for this source pane are listed first, marked, and preselected.
-8. nvim opens on the full draft. Reorder, edit, or delete chunks freely.
-9. **`:wq`** — draft pastes into the selected prompt or prompts via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
-10. Review in the live prompt and hit **Enter** yourself when it looks right.
+6. For a quick one-off context send, select text and press **`s`**. If target panes are not remembered yet, pick them in the `fzf` popup first.
+7. Press **`I`** any time in copy mode to update the remembered coding panes without sending text.
+8. When the whole reply is assembled, press **`C`** for the current pane or **`S`** to multicast.
+9. With **`S`**, pick one or more detected coding panes in the `fzf` popup. Previously selected targets for this source pane are listed first, marked, and preselected.
+10. nvim opens on the full draft. Reorder, edit, or delete chunks freely.
+11. **`:wq`** — draft pastes into the selected prompt or prompts via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
+12. Review in the live prompt and hit **Enter** yourself when it looks right.
 
 If you exit nvim without changes (`:q!` or `:wq` on an unmodified file), the chunk is treated as cancelled — nothing is appended.
 
@@ -121,6 +134,8 @@ tmcmt draft multicast --pane <id> # select target panes, review, paste, archive
 tmcmt draft show  --pane <id>    # print current draft to stdout
 tmcmt draft clear --pane <id>    # discard current draft
 tmcmt draft list                 # list all drafts with pane status
+tmcmt selection send --pane <id>    # send raw stdin to remembered/new coding panes
+tmcmt selection targets --pane <id> # update remembered coding panes
 tmcmt cat        [-n N]           # print recent flushed sessions
 tmcmt ls         [-n N]           # alias for cat
 tmcmt send        --pane <id>    # paste stdin → pane(s), repeatable
@@ -153,6 +168,12 @@ tmcmt --version
 | `--all-panes` | Show all panes in the selector, not only detected coding panes |
 | `--send` | Press Enter in every target pane after pasting |
 | `--dry-run` | Print target summary and payload without opening the editor, pasting, archiving, or updating remembered targets |
+
+### Selection commands
+
+`tmcmt selection send --pane <source>` reads stdin and sends it raw to remembered live targets for that source pane. If no remembered target is live, it opens the same coding-pane selector used by multicast, stores the chosen panes, then sends.
+
+`tmcmt selection targets --pane <source>` only opens the selector and stores the chosen panes. It is meant for the `I` binding.
 
 ### Done sessions
 
@@ -196,7 +217,7 @@ Draft accumulation fixes this structurally:
 - **Cancellation** — `:q!` or `:wq` without edits → chunk cancelled, nothing appended.
 - **Empty comment** — allowed. You get a selection-only chunk.
 - **Flushed drafts** — successful flushes are kept under `drafts/done/` as incremental `.md` files, capped at the newest 1000 archive files.
-- **Remembered multicast targets** — selected target panes are stored per source pane under `~/.local/state/tmcmt/targets.json`. Stale pane ids are ignored on reuse.
+- **Remembered targets** — selected target panes for multicast and direct selection sends are stored per source pane under `~/.local/state/tmcmt/targets.json`. Stale pane ids are ignored on reuse.
 - **Stale drafts** — every `add`/`flush` walks the active drafts dir and deletes files whose pane id no longer exists in `tmux list-panes -a`.
 - **ANSI in selections** — CSI (color) and OSC (hyperlinks, titles) sequences are stripped before the selection hits your draft.
 - **Multi-line content** — pasted with bracketed paste (`-p`), so claude-code treats it as one message instead of submitting each line.
@@ -220,6 +241,12 @@ tmcmt draft multicast --pane %12 --targets %42,%47
 
 # reuse the last live targets selected for this source pane
 tmcmt draft multicast --pane %12 --reuse
+
+# send raw stdin through the remembered/new target selector
+echo "look at this stack trace" | tmcmt selection send --pane %12
+
+# update remembered direct-send/multicast targets without sending
+tmcmt selection targets --pane %12
 ```
 
 ## Layout
