@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,10 @@ import (
 )
 
 const paneFormat = "#{session_id}\t#{pane_id}\t#{pane_pid}\t#{session_name}\t#{window_name}\t#{window_index}\t#{pane_index}\t#{pane_title}\t#{@pane_label}\t#{?pane_current_path,#{pane_current_path},#{pane_start_path}}\t#{pane_current_command}"
+
+var ErrSelectionCancelled = errors.New("selection cancelled")
+
+var lookPath = exec.LookPath
 
 type Pane struct {
 	SessionID   string
@@ -228,6 +233,72 @@ func (c Candidate) Row() string {
 	return fmt.Sprintf("%s\t%-10s\t%s\t%s", c.Pane.ID, tool, location, c.Pane.CWD)
 }
 
+// SelectCandidates opens a tmux popup with fzf multi-select and returns the
+// accepted pane ids. Remembered panes are shown first and marked in the list.
+func SelectCandidates(candidates []Candidate, remembered []string) ([]string, error) {
+	if _, err := lookPath("fzf"); err != nil {
+		return nil, errors.New("multicast selection requires fzf")
+	}
+	if len(candidates) == 0 {
+		return nil, ErrSelectionCancelled
+	}
+
+	rememberedSet := make(map[string]struct{}, len(remembered))
+	for _, paneID := range remembered {
+		rememberedSet[paneID] = struct{}{}
+	}
+	rows := candidateRows(candidates, rememberedSet)
+
+	in, err := os.CreateTemp("", "tmcmt-targets-*.tsv")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(in.Name())
+	if _, err := in.WriteString(strings.Join(rows, "\n") + "\n"); err != nil {
+		_ = in.Close()
+		return nil, err
+	}
+	if err := in.Close(); err != nil {
+		return nil, err
+	}
+
+	out, err := os.CreateTemp("", "tmcmt-targets-selected-*.txt")
+	if err != nil {
+		return nil, err
+	}
+	outPath := out.Name()
+	_ = out.Close()
+	defer os.Remove(outPath)
+
+	header := "Tab selects targets. Remembered targets are marked * and listed first."
+	shellCmd := fmt.Sprintf(
+		`fzf --multi --prompt=%s --header=%s --with-nth=2.. --accept-nth=1 < %s > %s || true`,
+		shellQuote("tmcmt targets> "),
+		shellQuote(header),
+		shellQuote(in.Name()),
+		shellQuote(outPath),
+	)
+	if _, err := run("display-popup", "-E", "-w", "90%", "-h", "80%", shellCmd); err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, err
+	}
+	var selected []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			selected = append(selected, line)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, ErrSelectionCancelled
+	}
+	return selected, nil
+}
+
 // SendEnter presses Enter in the target pane.
 func SendEnter(paneID string) error {
 	_, err := run("send-keys", "-t", paneID, "Enter")
@@ -372,4 +443,30 @@ func tmuxPart(index, label string) string {
 		return fmt.Sprintf("%s(%s)", index, label)
 	}
 	return index
+}
+
+func candidateRows(candidates []Candidate, remembered map[string]struct{}) []string {
+	ordered := make([]Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := remembered[candidate.Pane.ID]; ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+	for _, candidate := range candidates {
+		if _, ok := remembered[candidate.Pane.ID]; !ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+
+	rows := make([]string, 0, len(ordered))
+	for _, candidate := range ordered {
+		row := candidate.Row()
+		if _, ok := remembered[candidate.Pane.ID]; ok {
+			row = strings.Replace(row, "\t", "\t*\t", 1)
+		} else {
+			row = strings.Replace(row, "\t", "\t \t", 1)
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }

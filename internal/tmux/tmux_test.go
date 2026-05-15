@@ -1,6 +1,10 @@
 package tmux
 
 import (
+	"errors"
+	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"tmcmt/internal/proc"
@@ -98,6 +102,48 @@ func TestCandidateFormatIncludesToolContextAndPaneID(t *testing.T) {
 	}
 }
 
+func TestCandidateRowsPutRememberedPanesFirst(t *testing.T) {
+	candidates := []Candidate{
+		{Pane: Pane{ID: "%2", SessionName: "main"}, Tool: "codex"},
+		{Pane: Pane{ID: "%3", SessionName: "main"}, Tool: "claude"},
+	}
+
+	rows := candidateRows(candidates, map[string]struct{}{"%3": {}})
+	if len(rows) != 2 || !strings.HasPrefix(rows[0], "%3\t") || !strings.HasPrefix(rows[1], "%2\t") {
+		t.Fatalf("rows = %#v, want remembered pane first", rows)
+	}
+}
+
+func TestSelectCandidatesRequiresFzf(t *testing.T) {
+	orig := lookPath
+	lookPath = func(string) (string, error) {
+		return "", os.ErrNotExist
+	}
+	t.Cleanup(func() {
+		lookPath = orig
+	})
+
+	_, err := SelectCandidates([]Candidate{{Pane: Pane{ID: "%2"}, Tool: "codex"}}, nil)
+	if err == nil || !contains(err.Error(), "multicast selection requires fzf") {
+		t.Fatalf("error = %v, want fzf requirement", err)
+	}
+}
+
+func TestSelectCandidatesTreatsEmptyCandidatesAsCancel(t *testing.T) {
+	orig := lookPath
+	lookPath = func(string) (string, error) {
+		return "/opt/homebrew/bin/fzf", nil
+	}
+	t.Cleanup(func() {
+		lookPath = orig
+	})
+
+	_, err := SelectCandidates(nil, nil)
+	if !errors.Is(err, ErrSelectionCancelled) {
+		t.Fatalf("error = %v, want selection cancelled", err)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -105,4 +151,24 @@ func contains(s, sub string) bool {
 		}
 	}
 	return sub == ""
+}
+
+func TestSelectCandidatesRowsAcceptPaneIDColumn(t *testing.T) {
+	rows := candidateRows([]Candidate{{Pane: Pane{ID: "%2", SessionName: "main"}, Tool: "codex"}}, nil)
+	fields := splitTabs(rows[0])
+	if !slices.Equal(fields[:2], []string{"%2", " "}) {
+		t.Fatalf("row fields = %#v, want pane id then marker", fields)
+	}
+}
+
+func splitTabs(s string) []string {
+	var fields []string
+	start := 0
+	for i := range s {
+		if s[i] == '\t' {
+			fields = append(fields, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(fields, s[start:])
 }
