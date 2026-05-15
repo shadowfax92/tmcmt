@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"tmcmt/internal/tmux"
 
@@ -12,7 +11,7 @@ import (
 )
 
 var (
-	sendPane  string
+	sendPanes []string
 	sendEnter bool
 )
 
@@ -26,7 +25,7 @@ wrappers, or one-off automation.`,
 }
 
 func init() {
-	sendCmd.Flags().StringVar(&sendPane, "pane", "", "Target pane id (default: current pane)")
+	sendCmd.Flags().StringSliceVar(&sendPanes, "pane", nil, "Target pane id (default: current pane, repeatable or comma-separated)")
 	sendCmd.Flags().BoolVar(&sendEnter, "enter", false, "Press Enter after pasting")
 	rootCmd.AddCommand(sendCmd)
 }
@@ -35,22 +34,39 @@ func runSend(cmd *cobra.Command, args []string) error {
 	if !tmux.IsInsideTmux() {
 		return errors.New("not inside a tmux session")
 	}
-	paneID, err := resolvePane(sendPane)
+	targetIDs, err := resolveSendTargets()
 	if err != nil {
 		return err
 	}
-	content, err := io.ReadAll(os.Stdin)
+	content, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
 	if len(content) == 0 {
 		return errors.New("empty stdin")
 	}
-	if err := tmux.PasteToPane(paneID, string(content)); err != nil {
-		return err
+	for _, paneID := range targetIDs {
+		if err := pasteToPane(paneID, string(content)); err != nil {
+			return err
+		}
 	}
 	if sendEnter {
-		return tmux.SendEnter(paneID)
+		for _, paneID := range targetIDs {
+			if err := sendEnterToPane(paneID); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func resolveSendTargets() ([]string, error) {
+	if len(sendPanes) == 0 {
+		paneID, err := resolvePane("")
+		if err != nil {
+			return nil, err
+		}
+		return []string{paneID}, nil
+	}
+	return parsePaneList(sendPanes)
 }
