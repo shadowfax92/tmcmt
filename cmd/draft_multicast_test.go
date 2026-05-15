@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"tmcmt/internal/draft"
@@ -133,6 +136,156 @@ func TestMulticastCancelLeavesDraftAndRememberedTargetsUntouched(t *testing.T) {
 	}
 }
 
+func TestMulticastReviewsAndPastesDraftToEveryTargetThenArchives(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := draft.Append("%1", "note", "selected"); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubMulticastRuntime(t)
+	defer restore()
+
+	discoverMulticastCandidates = func(string, bool) ([]tmux.Candidate, error) {
+		return []tmux.Candidate{
+			{Pane: tmux.Pane{ID: "%2"}, Tool: "codex"},
+			{Pane: tmux.Pane{ID: "%3"}, Tool: "claude"},
+		}, nil
+	}
+	selectMulticastTargets = func([]tmux.Candidate, []string) ([]string, error) {
+		return []string{"%2", "%3"}, nil
+	}
+
+	var edited bool
+	pasted := map[string]string{}
+	editDraftInPopup = func(path string, insertMode bool) error {
+		edited = true
+		return nil
+	}
+	pasteToPane = func(paneID, content string) error {
+		pasted[paneID] = content
+		return nil
+	}
+
+	if _, err := executeRootForTest(t, "draft", "multicast", "--pane", "%1"); err != nil {
+		t.Fatal(err)
+	}
+	if !edited {
+		t.Fatal("expected editor review to run")
+	}
+	if pasted["%2"] == "" || pasted["%2"] != pasted["%3"] {
+		t.Fatalf("pasted content = %#v", pasted)
+	}
+	if _, exists := draft.PathIfExists("%1"); exists {
+		t.Fatal("expected source draft to be archived")
+	}
+	done := filepath.Join(home, ".local", "state", "tmcmt", "drafts", "done", "1-000001.md")
+	if _, err := os.Stat(done); err != nil {
+		t.Fatalf("expected archive %s: %v", done, err)
+	}
+}
+
+func TestMulticastEmptyReviewClearsDraftAndSendsNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := draft.Append("%1", "note", "selected"); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubMulticastRuntime(t)
+	defer restore()
+
+	discoverMulticastCandidates = func(string, bool) ([]tmux.Candidate, error) {
+		return []tmux.Candidate{{Pane: tmux.Pane{ID: "%2"}, Tool: "codex"}}, nil
+	}
+	selectMulticastTargets = func([]tmux.Candidate, []string) ([]string, error) {
+		return []string{"%2"}, nil
+	}
+	editDraftInPopup = func(path string, insertMode bool) error {
+		return os.WriteFile(path, []byte(" \n\t\n"), 0o644)
+	}
+	pasteToPane = func(string, string) error {
+		t.Fatal("paste should not run for empty reviewed draft")
+		return nil
+	}
+
+	if _, err := executeRootForTest(t, "draft", "multicast", "--pane", "%1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := draft.PathIfExists("%1"); exists {
+		t.Fatal("expected empty draft to be cleared")
+	}
+}
+
+func TestMulticastStaleTargetLeavesDraftUnarchived(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := draft.Append("%1", "note", "selected"); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubMulticastRuntime(t)
+	defer restore()
+
+	discoverMulticastCandidates = func(string, bool) ([]tmux.Candidate, error) {
+		return []tmux.Candidate{
+			{Pane: tmux.Pane{ID: "%2"}, Tool: "codex"},
+			{Pane: tmux.Pane{ID: "%3"}, Tool: "claude"},
+		}, nil
+	}
+	selectMulticastTargets = func([]tmux.Candidate, []string) ([]string, error) {
+		return []string{"%2", "%3"}, nil
+	}
+	paneStillExists = func(paneID string) bool {
+		return paneID != "%3"
+	}
+	pasteToPane = func(string, string) error {
+		t.Fatal("paste should not run when any target is stale")
+		return nil
+	}
+
+	if _, err := executeRootForTest(t, "draft", "multicast", "--pane", "%1"); err == nil || !strings.Contains(err.Error(), "%3") {
+		t.Fatalf("error = %v, want stale %%3 error", err)
+	}
+	if _, exists := draft.PathIfExists("%1"); !exists {
+		t.Fatal("expected draft to remain active")
+	}
+}
+
+func TestMulticastSendPressesEnterForEveryTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := draft.Append("%1", "note", "selected"); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubMulticastRuntime(t)
+	defer restore()
+
+	discoverMulticastCandidates = func(string, bool) ([]tmux.Candidate, error) {
+		return []tmux.Candidate{
+			{Pane: tmux.Pane{ID: "%2"}, Tool: "codex"},
+			{Pane: tmux.Pane{ID: "%3"}, Tool: "claude"},
+		}, nil
+	}
+	selectMulticastTargets = func([]tmux.Candidate, []string) ([]string, error) {
+		return []string{"%2", "%3"}, nil
+	}
+
+	var entered []string
+	sendEnterToPane = func(paneID string) error {
+		entered = append(entered, paneID)
+		return nil
+	}
+
+	if _, err := executeRootForTest(t, "draft", "multicast", "--pane", "%1", "--send"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(entered, []string{"%2", "%3"}) {
+		t.Fatalf("entered panes = %#v, want %%2 and %%3", entered)
+	}
+}
+
 func stubMulticastDeps(t *testing.T) func() {
 	t.Helper()
 	origDiscover := discoverMulticastCandidates
@@ -140,13 +293,16 @@ func stubMulticastDeps(t *testing.T) func() {
 	origContinue := continueMulticast
 	origPane := multicastPane
 	origAll := multicastAllPanes
+	origSend := multicastSend
 
 	multicastPane = ""
 	multicastAllPanes = false
+	multicastSend = false
 	continueMulticast = func(string, []string) error { return nil }
 	t.Cleanup(func() {
 		multicastPane = origPane
 		multicastAllPanes = origAll
+		multicastSend = origSend
 		resetMulticastFlags(t)
 	})
 	return func() {
@@ -156,11 +312,34 @@ func stubMulticastDeps(t *testing.T) func() {
 	}
 }
 
+func stubMulticastRuntime(t *testing.T) func() {
+	t.Helper()
+	restoreDeps := stubMulticastDeps(t)
+	origContinue := continueMulticast
+	origEdit := editDraftInPopup
+	origPaste := pasteToPane
+	origEnter := sendEnterToPane
+	origPaneExists := paneStillExists
+	continueMulticast = runMulticastDispatch
+	editDraftInPopup = func(string, bool) error { return nil }
+	pasteToPane = func(string, string) error { return nil }
+	sendEnterToPane = func(string) error { return nil }
+	paneStillExists = func(string) bool { return true }
+	return func() {
+		restoreDeps()
+		continueMulticast = origContinue
+		editDraftInPopup = origEdit
+		pasteToPane = origPaste
+		sendEnterToPane = origEnter
+		paneStillExists = origPaneExists
+	}
+}
+
 func resetMulticastFlags(t *testing.T) {
 	t.Helper()
 	multicastPane = ""
 	multicastAllPanes = false
-	for _, name := range []string{"pane", "all-panes"} {
+	for _, name := range []string{"pane", "all-panes", "send"} {
 		flag := multicastCmd.Flags().Lookup(name)
 		if flag == nil {
 			t.Fatalf("multicast flag %s missing", name)

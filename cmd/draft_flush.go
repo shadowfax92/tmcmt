@@ -17,6 +17,12 @@ var (
 	flushNoReview bool
 	flushSend     bool
 	flushDryRun   bool
+
+	editDraftInPopup = tmux.EditInPopup
+	pasteToPane      = tmux.PasteToPane
+	sendEnterToPane  = tmux.SendEnter
+	paneStillExists  = tmux.PaneExists
+	archiveDraft     = draft.Archive
 )
 
 var flushCmd = &cobra.Command{
@@ -55,41 +61,51 @@ func runDraftFlush(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if !flushNoReview && !flushDryRun {
-		if err := tmux.EditInPopup(path, false); err != nil {
-			return fmt.Errorf("popup nvim: %w", err)
-		}
-	}
-
-	content, err := os.ReadFile(path)
+	content, ok, err := reviewDraftFile(path, !flushNoReview && !flushDryRun)
 	if err != nil {
-		return fmt.Errorf("read draft: %w", err)
+		return err
 	}
-	if strings.TrimSpace(string(content)) == "" {
-		_ = os.Remove(path)
-		_ = tmux.DisplayMessage("tmcmt: draft empty, cleared")
+	if !ok {
 		return nil
 	}
 
 	if flushDryRun {
-		fmt.Print(string(content))
+		fmt.Print(content)
 		return nil
 	}
 
-	if err := tmux.PasteToPane(paneID, string(content)); err != nil {
+	if err := pasteToPane(paneID, content); err != nil {
 		return fmt.Errorf("paste: %w", err)
 	}
 
 	if flushSend {
-		if err := tmux.SendEnter(paneID); err != nil {
+		if err := sendEnterToPane(paneID); err != nil {
 			return fmt.Errorf("send enter: %w", err)
 		}
 	}
 
-	if _, err := draft.Archive(paneID); err != nil {
+	if _, err := archiveDraft(paneID); err != nil {
 		return fmt.Errorf("archive draft: %w", err)
 	}
 
 	_ = tmux.DisplayMessage("tmcmt: draft flushed and archived")
 	return nil
+}
+
+func reviewDraftFile(path string, review bool) (string, bool, error) {
+	if review {
+		if err := editDraftInPopup(path, false); err != nil {
+			return "", false, fmt.Errorf("popup nvim: %w", err)
+		}
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("read draft: %w", err)
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		_ = os.Remove(path)
+		_ = tmux.DisplayMessage("tmcmt: draft empty, cleared")
+		return "", false, nil
+	}
+	return string(content), true, nil
 }

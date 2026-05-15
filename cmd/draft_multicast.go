@@ -14,10 +14,11 @@ import (
 var (
 	multicastPane     string
 	multicastAllPanes bool
+	multicastSend     bool
 
 	discoverMulticastCandidates = tmux.DiscoverCodingPanes
 	selectMulticastTargets      = tmux.SelectCandidates
-	continueMulticast           = continueMulticastStub
+	continueMulticast           = runMulticastDispatch
 )
 
 var multicastCmd = &cobra.Command{
@@ -29,6 +30,7 @@ var multicastCmd = &cobra.Command{
 func init() {
 	multicastCmd.Flags().StringVar(&multicastPane, "pane", "", "Source pane id (default: current pane)")
 	multicastCmd.Flags().BoolVar(&multicastAllPanes, "all-panes", false, "Show all panes, not just detected coding panes")
+	multicastCmd.Flags().BoolVar(&multicastSend, "send", false, "Press Enter after pasting into every target")
 	draftCmd.AddCommand(multicastCmd)
 }
 
@@ -76,7 +78,40 @@ func runDraftMulticast(cmd *cobra.Command, args []string) error {
 	return continueMulticast(sourcePane, targetIDs)
 }
 
-func continueMulticastStub(sourcePane string, targetIDs []string) error {
-	_ = tmux.DisplayMessage(fmt.Sprintf("tmcmt: selected %d target%s for %s", len(targetIDs), plural(len(targetIDs)), sourcePane))
+func runMulticastDispatch(sourcePane string, targetIDs []string) error {
+	path, exists := draft.PathIfExists(sourcePane)
+	if !exists {
+		return fmt.Errorf("no draft for %s", sourcePane)
+	}
+
+	content, ok, err := reviewDraftFile(path, true)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+
+	for _, paneID := range targetIDs {
+		if !paneStillExists(paneID) {
+			return fmt.Errorf("target pane %s no longer exists", paneID)
+		}
+	}
+	for _, paneID := range targetIDs {
+		if err := pasteToPane(paneID, content); err != nil {
+			return fmt.Errorf("paste to %s: %w", paneID, err)
+		}
+	}
+	if multicastSend {
+		for _, paneID := range targetIDs {
+			if err := sendEnterToPane(paneID); err != nil {
+				return fmt.Errorf("send enter to %s: %w", paneID, err)
+			}
+		}
+	}
+	if _, err := archiveDraft(sourcePane); err != nil {
+		return fmt.Errorf("archive draft: %w", err)
+	}
+	_ = tmux.DisplayMessage(fmt.Sprintf("tmcmt: draft sent to %d target%s and archived", len(targetIDs), plural(len(targetIDs))))
 	return nil
 }
