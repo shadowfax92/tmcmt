@@ -17,7 +17,8 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
 - 📬 **Bracketed-paste injection** — the whole draft arrives as one coherent message, not N fragments to stitch together.
 - 💾 **Recoverable drafts** — active drafts survive restarts, and flushed drafts are archived as incremental `.md` files.
 - 🧹 **Stale-draft GC** — active drafts for dead panes are cleaned up automatically on every add/flush.
-- 🔧 **Scriptable primitive** — `tmcmt send` pipes stdin straight into any pane, for automation and future multicast.
+- 📡 **Multicast review** — `S` lets you pick several coding panes, remembers them, and sends one reviewed draft to all of them.
+- 🔧 **Scriptable primitive** — `tmcmt send` pipes stdin straight into one or more panes for automation.
 
 ---
 
@@ -57,13 +58,14 @@ You're watching a `claude` or `codex` agent produce a long reply in a tmux pane.
 ```
 
 - **`c`** in copy mode → nvim popup, type comment, `:wq`. Chunk appended to draft. **Pane untouched.**
-- **`C`** in copy mode → nvim popup opens on the accumulated draft for a final review. `:wq` pastes into the pane.
+- **`C`** in copy mode → nvim popup opens on the accumulated draft for a final review. `:wq` pastes into the current pane.
+- **`S`** in copy mode → tmux popup opens a multi-select list of detected coding panes, then nvim opens the same draft for review. `:wq` pastes into every selected pane and remembers those targets for next time.
 
 You hit Enter yourself when the prompt looks right.
 
 ## Install
 
-Requires Go 1.24+, tmux 3.2+, and `nvim` (or any `$EDITOR`, but `nvim`/`vim` get insert-mode-on-open).
+Requires Go 1.24+, tmux 3.2+, and `nvim` (or any `$EDITOR`, but `nvim`/`vim` get insert-mode-on-open). The interactive `S` selector also requires `fzf`; non-interactive multicast works with `--targets` or `--reuse`.
 
 ```sh
 git clone <repo-url> tmcmt
@@ -85,6 +87,10 @@ bind-key -T copy-mode-vi c send-keys -X copy-pipe-no-clear \
 # C = flush the draft: review in nvim popup, paste into pane, archive
 bind-key -T copy-mode-vi C send-keys -X copy-pipe-no-clear \
   "tmcmt draft flush --pane '#{pane_id}'"
+
+# S = multicast the draft: select remembered/new coding panes, review, paste, archive
+bind-key -T copy-mode-vi S send-keys -X copy-pipe-no-clear \
+  "tmcmt draft multicast --pane '#{pane_id}'"
 ```
 
 Both bindings use `copy-pipe-no-clear` so copy mode stays active and scroll position is preserved.
@@ -98,9 +104,11 @@ Inside a tmux pane running `claude` or `codex`:
 3. **`c`** — nvim popup opens with an empty comment area on top and your selection rendered as a commented-out preview below a `TMCMT-SELECTION-BELOW` separator.
 4. Type your comment, **`:wq`**. Status bar flashes `tmcmt: 1 chunk in draft — C to flush`.
 5. Scroll somewhere else, select, **`c`** again. Counter ticks up.
-6. When the whole reply is assembled, **`C`**. nvim popup opens on the full draft. Reorder, edit, or delete chunks freely.
-7. **`:wq`** — draft pastes into the agent's prompt via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
-8. Review in the live prompt and hit **Enter** yourself when it looks right.
+6. When the whole reply is assembled, press **`C`** for the current pane or **`S`** to multicast.
+7. With **`S`**, pick one or more detected coding panes in the `fzf` popup. Previously selected targets for this source pane are listed first and marked.
+8. nvim opens on the full draft. Reorder, edit, or delete chunks freely.
+9. **`:wq`** — draft pastes into the selected prompt or prompts via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
+10. Review in the live prompt and hit **Enter** yourself when it looks right.
 
 If you exit nvim without changes (`:q!` or `:wq` on an unmodified file), the chunk is treated as cancelled — nothing is appended.
 
@@ -109,12 +117,13 @@ If you exit nvim without changes (`:q!` or `:wq` on an unmodified file), the chu
 ```sh
 tmcmt draft add   --pane <id>    # append a commented chunk (bound to `c`)
 tmcmt draft flush --pane <id>    # review + paste + archive draft (bound to `C`)
+tmcmt draft multicast --pane <id> # select target panes, review, paste, archive
 tmcmt draft show  --pane <id>    # print current draft to stdout
 tmcmt draft clear --pane <id>    # discard current draft
 tmcmt draft list                 # list all drafts with pane status
 tmcmt cat        [-n N]           # print recent flushed sessions
 tmcmt ls         [-n N]           # alias for cat
-tmcmt send        --pane <id>    # paste stdin → pane (scriptable)
+tmcmt send        --pane <id>    # paste stdin → pane(s), repeatable
 tmcmt --version
 ```
 
@@ -132,8 +141,18 @@ tmcmt --version
 
 | Flag | Description |
 |------|-------------|
-| `--pane <id>` | Target pane id (default: current pane) |
+| `--pane <id>` | Target pane id (default: current pane); repeat or comma-separate for multicast |
 | `--enter` | Press Enter after pasting |
+
+### Multicast flags
+
+| Flag | Description |
+|------|-------------|
+| `--targets <ids>` | Bypass the selector and send to comma-separated pane ids |
+| `--reuse` | Reuse remembered live targets for this source pane |
+| `--all-panes` | Show all panes in the selector, not only detected coding panes |
+| `--send` | Press Enter in every target pane after pasting |
+| `--dry-run` | Print target summary and payload without opening the editor, pasting, archiving, or updating remembered targets |
 
 ### Done sessions
 
@@ -177,6 +196,7 @@ Draft accumulation fixes this structurally:
 - **Cancellation** — `:q!` or `:wq` without edits → chunk cancelled, nothing appended.
 - **Empty comment** — allowed. You get a selection-only chunk.
 - **Flushed drafts** — successful flushes are kept under `drafts/done/` as incremental `.md` files, capped at the newest 1000 archive files.
+- **Remembered multicast targets** — selected target panes are stored per source pane under `~/.local/state/tmcmt/targets.json`. Stale pane ids are ignored on reuse.
 - **Stale drafts** — every `add`/`flush` walks the active drafts dir and deletes files whose pane id no longer exists in `tmux list-panes -a`.
 - **ANSI in selections** — CSI (color) and OSC (hyperlinks, titles) sequences are stripped before the selection hits your draft.
 - **Multi-line content** — pasted with bracketed paste (`-p`), so claude-code treats it as one message instead of submitting each line.
@@ -192,10 +212,14 @@ tail -100 build.log | tmcmt send --pane %42
 # with auto-enter
 echo "rerun the last test" | tmcmt send --pane %42 --enter
 
-# primitive for future multicast wrappers:
-for pane in %42 %47; do
-  echo "explain this" | tmcmt send --pane $pane
-done
+# multicast stdin directly
+echo "rerun the last test" | tmcmt send --pane %42 --pane %47 --enter
+
+# multicast the current source draft without opening the selector
+tmcmt draft multicast --pane %12 --targets %42,%47
+
+# reuse the last live targets selected for this source pane
+tmcmt draft multicast --pane %12 --reuse
 ```
 
 ## Layout
@@ -206,6 +230,8 @@ tmcmt/
 ├── cmd/            # cobra subcommands (draft_add, draft_flush, send, ...)
 ├── internal/
 │   ├── tmux/       # tmux CLI wrappers (run, paste, popup, display-message)
+│   ├── proc/       # process snapshot + descendant walking for coding-pane discovery
+│   ├── targets/    # remembered multicast target panes
 │   ├── draft/      # per-pane draft file CRUD + GC
 │   ├── chunk/      # nvim compose template build/parse
 │   └── sanitize/   # ANSI CSI + OSC strip
