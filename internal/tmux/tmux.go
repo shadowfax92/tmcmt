@@ -248,6 +248,11 @@ func SelectCandidates(candidates []Candidate, remembered []string) ([]string, er
 		rememberedSet[paneID] = struct{}{}
 	}
 	rows := candidateRows(candidates, rememberedSet)
+	preselect := fzfPreselectBind(rememberedCandidateCount(candidates, rememberedSet))
+	bindArg := ""
+	if preselect != "" {
+		bindArg = " --bind=" + shellQuote(preselect)
+	}
 
 	in, err := os.CreateTemp("", "tmcmt-targets-*.tsv")
 	if err != nil {
@@ -272,9 +277,10 @@ func SelectCandidates(candidates []Candidate, remembered []string) ([]string, er
 
 	header := "Tab selects targets. Remembered targets are marked * and listed first."
 	shellCmd := fmt.Sprintf(
-		`fzf --multi --prompt=%s --header=%s --with-nth=2.. --accept-nth=1 < %s > %s || true`,
+		`fzf --multi --prompt=%s --header=%s --with-nth=2.. --accept-nth=1%s < %s > %s || true`,
 		shellQuote("tmcmt targets> "),
 		shellQuote(header),
+		bindArg,
 		shellQuote(in.Name()),
 		shellQuote(outPath),
 	)
@@ -469,4 +475,28 @@ func candidateRows(candidates []Candidate, remembered map[string]struct{}) []str
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func rememberedCandidateCount(candidates []Candidate, remembered map[string]struct{}) int {
+	count := 0
+	for _, candidate := range candidates {
+		if _, ok := remembered[candidate.Pane.ID]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func fzfPreselectBind(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	actions := []string{"first"}
+	for i := 0; i < count; i++ {
+		actions = append(actions, "select")
+		if i < count-1 {
+			actions = append(actions, "down")
+		}
+	}
+	return "start:" + strings.Join(actions, "+")
 }

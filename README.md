@@ -105,7 +105,7 @@ Inside a tmux pane running `claude` or `codex`:
 4. Type your comment, **`:wq`**. Status bar flashes `tmcmt: 1 chunk in draft — C to flush`.
 5. Scroll somewhere else, select, **`c`** again. Counter ticks up.
 6. When the whole reply is assembled, press **`C`** for the current pane or **`S`** to multicast.
-7. With **`S`**, pick one or more detected coding panes in the `fzf` popup. Previously selected targets for this source pane are listed first and marked.
+7. With **`S`**, pick one or more detected coding panes in the `fzf` popup. Previously selected targets for this source pane are listed first, marked, and preselected.
 8. nvim opens on the full draft. Reorder, edit, or delete chunks freely.
 9. **`:wq`** — draft pastes into the selected prompt or prompts via bracketed paste, then moves to `drafts/done/`. No auto-Enter.
 10. Review in the live prompt and hit **Enter** yourself when it looks right.

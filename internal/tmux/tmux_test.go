@@ -112,6 +112,20 @@ func TestCandidateRowsPutRememberedPanesFirst(t *testing.T) {
 	if len(rows) != 2 || !strings.HasPrefix(rows[0], "%3\t") || !strings.HasPrefix(rows[1], "%2\t") {
 		t.Fatalf("rows = %#v, want remembered pane first", rows)
 	}
+	if count := rememberedCandidateCount(candidates, map[string]struct{}{"%3": {}, "%9": {}}); count != 1 {
+		t.Fatalf("remembered candidate count = %d, want 1", count)
+	}
+}
+
+func TestFzfPreselectBindSelectsRememberedRowsFromTop(t *testing.T) {
+	got := fzfPreselectBind(3)
+	want := "start:first+select+down+select+down+select"
+	if got != want {
+		t.Fatalf("bind = %q, want %q", got, want)
+	}
+	if got := fzfPreselectBind(0); got != "" {
+		t.Fatalf("zero bind = %q, want empty", got)
+	}
 }
 
 func TestSelectCandidatesRequiresFzf(t *testing.T) {
